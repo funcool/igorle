@@ -20,3 +20,7 @@
         :open (aset s "onopen" callable)
         :error (aset s "onerror" callable)))))
 
+(defn create
+  "Create new socket from the url."
+  [url]
+  (js/WebSocket. url))
