@@ -90,6 +90,21 @@
 
         (recur)))))
 
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Client Constructor.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defn client?
+  "Return true if a privided client is instance
+  of Client type."
+  [client]
+  (instance? Client client))
+
+(defn frame-with-id?
+  "A predicate for check that frame comes with id."
+  [frame]
+  (not (nil? (get-in frame :headers :id))))
+
 (defn client
   "Creates a new client instance from socket."
   ([uri]
@@ -111,10 +126,7 @@
                               :inputpub inputpub
                               :msgbuspub msgbuspub})]
 
-     (s/set-listener! :message #(put! input {:type :socket/message :payload (.-data %)}))
-     (s/set-listener! :open #(put! input {:type :socket/open :payload (.-data %)}))
-     (s/set-listener! :close #(put! input {:type :socket/close :payload (.-data %)}))
-     (s/set-listener! :error #(put! input {:type :socket/error :payload (.-data %)}))
+     (s/listen! socket input)
 
      ;; A process that decodes the messages
      (handle-input-data client)
@@ -122,18 +134,6 @@
      ;; A process that encodes messages
      (handle-output-data client)
      client)))
-
-(defn client?
-  "Return true if a privided client is instance
-  of Client type."
-  [client]
-  (instance? Client client))
-
-;; (defn wait-open
-;;   "Wait until the client is suscessfully in a open state."
-;;   ([client])
-;;   ([client timeout]))
-
 
 (defn subscribe*
   "Subscribe to arbitrary events on the internal
@@ -146,70 +146,50 @@
      (sub p key ch true)
      ch)))
 
-;; (defn connect
-;;   "Sends a HELLO frame to the server for establish the
-;;   POSTAL protocol connection.
-
-;;   Optionally, the user can provide a timeout as second
-;;   parameter. If it is not provided, the default timeout
-;;   is 600ms."
-;;   ([client]
-;;    (connect client 600))
-;;   ([client timeout]
-;;    {:pre [(client? client)]}
-;;    (let [p (:msgbuspub client)
-;;          sc (a/chan 1)]
-;;      (a/sub p :hello sc)
-;;      (p/promise
-;;       (fn [resolve reject]
-;;         (a/go
-;;           (let [[val ch] (a/alts! [c (a/timeout timeout)])]
-;;             (a/close! sc)
-;;             (if (= ch c)
-;;               (resolve nil)
-;;               (reject {:type :timeout})))))))
-
-
-(defn- query*
-  [client message]
+(defn- wait-frame
+  [client frametype msgid timeout]
+  {:pre [(keyword? frametype)]}
   (let [output (:output client)
         msgbuspub (:msgbuspub client)
+        tc (a/timeout timeout)
         sc (a/chan 1)
         oc (a/chan 1)]
-    (a/sub msgbuspub :response sc)
+    (a/sub msgbuspub frametype sc)
     (a/sub msgbuspub :error sc)
     (a/go-loop []
-      (when-let [frame (a/<! msgbuspub)]
-        (let [frameid (get-in frame [:headers :message-id])
-              msgid (get-in message [:headers :message-id])]
-          (if (= frameid msgid)
-            (do
-              (case (:command frame)
-                :error (a/>! oc (either/left frame))
-                :response (a/>! oc (either/right frame)))
-              (a/close! sc)
-              (a/close! oc))
-            (recur)))))
+      (let [[frame ch] (a/alts! [sc tc])]
+        (if (= ch tc)
+          (a/>! oc {:type :timeout})
+          (let [frameid (get-in frame [:headers :message-id])]
+            (if (= frameid msgid)
+              (do
+                (case (:command frame)
+                  :error (a/>! oc {:type :error :payload frame})
+                  :response (a/>! oc {:type :response :payload frame})
+                (a/close! sc)
+                (a/close! oc))
+              (recur))))))
     oc))
+
+(defn- send-frame
+  [client frame]
+  (let [output (:output client)]
+    (a/put! output frame)))
 
 (defn query
   "Sends a QUERY frame to the server."
-  ([client message]
-   (query client message 600))
-  ([client message timeout]
-   {:pre [(client? client)]}
+  ([client frame]
+   (query client frame 600))
+  ([client frame timeout]
+   {:pre [(client? client)
+          (frame-with-id? frame)]}
    (p/promise
     (fn [resolve, reject]
-      (let [qch (query* client message)
-            tch (a/timeout timeout)]
-        (a/go
-          (let [[val ch] (a/alts! [qch tch])]
-            (cond
-              (= ch tch)
-              (reject (ex-info "Timeout" {:type :timeout}))
-
-              (either/left? val)
-              (reject @val)
-
-              :else
-              (resolve @val)))))))))
+      (let [msgid (get-in frame [:headers :id])
+            ch (wait-frame client :response msgid timeout)]
+        (send-frame client frame)
+        (a/take! ch (fn [{:keys [type payload]}]
+                      (case type
+                        :timeout (reject (ex-info "Timeout" {:type :timeout}))
+                        :error (reject frame)
+                        :response (resolve frame)))))))))
