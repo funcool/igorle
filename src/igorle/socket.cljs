@@ -3,12 +3,13 @@
   (:require [cljs.core.async :as a]))
 
 (defprotocol ISocket
-  (listen! [_ ch] "Listen all events on channel."))
+  (listen! [_ ch] "Listen all events on channel.")
+  (send! [_ data] "Send data through the socket."))
 
 (defprotocol ISocketFactory
   String
-  (-socket [_]
-    (js/WebSocket. url))
+  (-socket [url]
+    (js/WebSocket. url)))
 
 (defn- listener
   "A listener factory helper."
@@ -26,7 +27,9 @@
         :message (aset s "onmessage" (listener :socket/message input))
         :close (aset s "onclose" (listener :socket/close input))
         :open (aset s "onopen" (listener :socket/open input))
-        :error (aset s "onerror" (listener :socket/error input))))))
+        :error (aset s "onerror" (listener :socket/error input))))
+    (send! [s data]
+      (.send s data))))
 
 (defn socket
   "Create new socket instance."
