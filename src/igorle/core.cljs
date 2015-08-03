@@ -198,31 +198,6 @@
      (sub p key ch true)
      ch)))
 
-(defn- wait-frame
-  [client frametype msgid timeout]
-  {:pre [(keyword? frametype)]}
-  (let [output (:output client)
-        msgbuspub (:msgbuspub client)
-        tc (a/timeout timeout)
-        sc (a/chan 1)
-        oc (a/chan 1)]
-    (a/sub msgbuspub frametype sc)
-    (a/sub msgbuspub :error sc)
-    (a/go-loop []
-      (let [[frame ch] (a/alts! [sc tc])]
-        (if (= ch tc)
-          (a/>! oc {:type :timeout})
-          (let [frameid (get-in frame [:headers :message-id])]
-            (if (= frameid msgid)
-              (do
-                (case (:command frame)
-                  :error (a/>! oc {:type :error :payload frame})
-                  :response (a/>! oc {:type :response :payload frame})
-                (a/close! sc)
-                (a/close! oc))
-              (recur))))))
-    oc))
-
 (defn- send-frame
   [client frame]
   (let [output (:output client)]
@@ -245,3 +220,32 @@
                         :timeout (reject (ex-info "Timeout" {:type :timeout}))
                         :error (reject frame)
                         :response (resolve frame)))))))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Helpers
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defn- wait-frame
+  [client frametype msgid timeout]
+  {:pre [(keyword? frametype)]}
+  (let [output (:output client)
+        msgbuspub (:msgbuspub client)
+        tc (a/timeout timeout)
+        sc (a/chan 1)
+        oc (a/chan 1)]
+    (a/sub msgbuspub frametype sc)
+    (a/sub msgbuspub :error sc)
+    (a/go-loop []
+      (let [[frame ch] (a/alts! [sc tc])]
+        (if (= ch tc)
+          (a/>! oc {:type :timeout})
+          (let [frameid (get-in frame [:headers :message-id])]
+            (if (= frameid msgid)
+              (do
+                (condp = (:command frame)
+                  :error (a/>! oc {:type :error :payload frame})
+                  frametype (a/>! oc {:type :response :payload frame}))
+                (a/close! sc)
+                (a/close! oc))
+              (recur))))))
+    oc))
