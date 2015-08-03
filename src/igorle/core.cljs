@@ -15,14 +15,16 @@
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 (defn- handle-input-data
-  [inputpub msgbus]
-  (let [c (a/chan 256)]
+  [client]
+  (let [c (a/chan 256)
+        pub (:inputpub client)
+        bus (:msgbus client)]
     (a/sub inputpub :socket/message c)
     (a/go-loop []
       (when-let [message (a/<! c)]
         (try
           (->> (postal/parse message)
-               (a/>! msgbus))
+               (a/>! bus))
           (catch js/Error e
             (log/error e)
             ;; TODO: put the error in a error channel
