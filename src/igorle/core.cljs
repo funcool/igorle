@@ -135,6 +135,27 @@
   [frame]
   (not (nil? (get-in frame :headers :id))))
 
+(defn debug-mode?
+  "Return true if a client is set into a debug mode."
+  [client]
+  (get-in client [:options :debug] false))
+
+(defn- fatal-state!
+  "Set a client in fatal state.
+
+  This can hapens in client initialization, initial handshake
+  and other similar situations where the user can't take any
+  action.  This closes the socket and set a client into no
+  usable state."
+  [client data]
+  (let [sock (:socket client)
+        input (:input client)
+        output (:output client)]
+    (.close sock)
+    (a/put! input {:type :client/error :payload data})
+    (a/close! input)
+    (a/close! output)))
+
 (defn client
   "Creates a new client instance from socket."
   ([uri]
@@ -147,6 +168,7 @@
          msgbus (a/chan)
          msgbuspub (a/pub msgbus :command)
          open (volatile! false)
+         options (merge *default-config* options)
          client (map->Client {:socket socket
                               :options options
                               :open open
