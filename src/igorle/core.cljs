@@ -118,6 +118,12 @@
 ;; Client Constructor.
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
+(def ^:dynamic
+  *default-config*
+  {:output-buffersize 256
+   :input-buffersize 256
+   :debug false})
+
 (defn client?
   "Return true if a privided client is instance
   of Client type."
