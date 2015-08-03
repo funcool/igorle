@@ -32,6 +32,28 @@
         (recur)))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Handshake
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(declare wait-frame)
+
+(defn handshake
+  [client]
+  (let [frame (pframes/frame :hello {} "")
+        sock (:socket client)
+        oc (a/chan)]
+    (s/send! sock (postal/render frame))
+    (a/go
+      (let [{:keys [type payload]} (a/<! (wait-frame client :hello nil 600))]
+        (case type
+          :timeout ;; todo
+          :error   ;; todo
+          :hello   ;; todo
+          )
+        (a/close! oc)))
+    oc))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; State & Output processing.
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
