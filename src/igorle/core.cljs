@@ -147,6 +147,7 @@
         input (:input client)
         output (:output client)]
     (.close sock)
+    (log/warn "The client '%s' enters in fatal state", client)
     (a/put! input {:type :client/error :payload data})
     (a/close! input)
     (a/close! output)))
