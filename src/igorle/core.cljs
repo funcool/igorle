@@ -135,11 +135,6 @@
   [frame]
   (not (nil? (get-in frame :headers :id))))
 
-(defn debug-mode?
-  "Return true if a client is set into a debug mode."
-  [client]
-  (get-in client [:options :debug] false))
-
 (defn- fatal-state!
   "Set a client in fatal state.
 
