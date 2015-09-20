@@ -1,11 +1,12 @@
 (ns igorle.core
-  (:require [taoensso.timbre :as log :include-macros true]
-            [postal.frames :as pframes]
+  (:require-macros [cljs.core.async.macros :refer [go-loop go]])
+  (:require [postal.frames :as pframes]
             [postal.core :as postal]
-            [igorle.socket :as socket]
-            [igorle.log :as log]
+            [igorle.socket :as is]
+            [igorle.log :as log :include-macros true]
             [cuerdas.core :as str]
             [promesa.core :as p]
+            [cljs.core.async :as a]
             [cats.core :as m]
             [cats.monad.either :as either]))
 
@@ -20,12 +21,12 @@
   (let [ic (a/chan 1)
         oc (a/chan 1)
         sock (:socket client)]
-    (s/-listen sock ic)
-    (a/go-loop []
+    (is/-listen sock ic)
+    (go-loop []
       (when-let [message (a/<! ic)]
         (case (:type message)
-          :socket/open (a/!> oc {:type :state :payload :open})
-          :socket/close (a/!> oc {:type :state :payload :close}))
+          :socket/open (a/>! oc {:type :state :payload :open})
+          :socket/close (a/>! oc {:type :state :payload :close}))
         (recur)))
     oc))
 
@@ -45,8 +46,8 @@
         bus-ch (:bus-ch client)
         in-pub (:in-pub client)]
     (a/sub in-pub :socket/message ch)
-    (a/go-loop []
-      (when-let [message (a/<! c)]
+    (go-loop []
+      (when-let [message (a/<! ch)]
         (when (= (:type message) :socket/message)
           (try
             (let [frame (postal/parse (:payload message))]
@@ -58,15 +59,18 @@
 (defn- handle-input-data
   [client]
   (let [sk (:socket client)
-        sk-ch (s/-listen sk (a/chan 16))
+        sk-ch (is/-listen sk (a/chan 16))
         in-ch (:in-ch client)]
     (a/pipe in-ch sk-ch true)))
+
+(declare handshake)
 
 (defn- handle-output-data
   [client]
   (let [output-ch (output-channel client)
         state-ch (state-channel client)
         ch (a/chan 256)
+        open (:open client)
         sock (:socket client)
         mixer (a/mix ch)]
 
@@ -76,7 +80,7 @@
     (a/toggle mixer {output-ch {:pause true}})
 
     ;; Start the process
-    (a/go-loop []
+    (go-loop []
       (when-let [{:keys [type payload]} (a/<! ch)]
         (case type
           :state
@@ -93,7 +97,7 @@
 
           :frame
           (let [frame (postal/render payload)]
-            (s/-send sock frame)))
+            (is/-send sock frame)))
         (recur)))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -110,8 +114,8 @@
   (let [frame (pframes/frame :hello {} "")
         sock (:socket client)
         timeout (get-in client [:options :handshake-timeout] 600)]
-    (s/-send sock (postal/render frame))
-    (a/go
+    (is/-send sock (postal/render frame))
+    (go
       (let [{:keys [type payload]} (a/<! (wait-frame client :hello nil timeout))]
         (case type
           :timeout
@@ -128,7 +132,7 @@
 
           :hello
           (do
-            (log/trance "Handskale perfromed successfully.")
+            (log/trace "Handskale perfromed successfully.")
             true))))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -148,6 +152,11 @@
   [client]
   (instance? Client client))
 
+(defn closed?
+  [client]
+  (let [open (:open client)]
+    (not @open)))
+
 (defn frame-with-id?
   "A predicate for check that frame comes with id."
   [frame]
@@ -166,7 +175,7 @@
     (log/warn "The client '%s' enters in fatal state", client)
     ;; TODO: add the ability to centralize all input messages
     ;; (a/put! input {:type :client/error :payload data})
-    (s/-close sock)
+    (is/-close sock)
     (a/close! out-ch)))
 
 (defn client
@@ -174,9 +183,9 @@
   ([uri]
    (client uri {}))
   ([uri options]
-   (let [socket (s/-create uri)
+   (let [socket (is/-create uri)
          in-ch (a/chan 256)
-         in-pub (a/phb in-ch :type)
+         in-pub (a/pub in-ch :type)
          out-ch (a/chan 256)
          bus-ch (a/chan)
          bus-pub (a/pub bus-ch :command)
@@ -212,7 +221,7 @@
    (subscribe* client key (a/chan 1)))
   ([client key ch]
    (let [pub (:bus-pub client)]
-     (sub pub key ch true)
+     (a/sub pub key ch true)
      ch)))
 
 (defn- send-frame
@@ -252,7 +261,7 @@
         oc (a/chan 1)]
     (a/sub msgbuspub frametype sc)
     (a/sub msgbuspub :error sc)
-    (a/go-loop []
+    (go-loop []
       (let [[frame ch] (a/alts! [sc tc])]
         (if (= ch tc)
           (a/>! oc {:type :timeout})

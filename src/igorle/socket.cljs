@@ -34,7 +34,7 @@
 (defn- listener
   [type output event]
   (let [data (.-data event)]
-    (a/put! output {:type type :payload data ::event event})))]
+    (a/put! output {:type type :payload data ::event event})))
 
 (defn- websocket*
   [ws]
@@ -46,18 +46,18 @@
     (set! (.-onerror ws) (partial listener bus :socket/error))
     (WebSocket. ws bus mult)))
 
-(deftype FakeWebSocket [bus mult]
+(deftype FakeWebSocket [busin busout mult]
   IWebSocket
   (-listen [_ ch]
     (a/tap mult ch)
     ch)
 
   (-send [_ data]
-    (.send ws data))
+    (a/put! busout data))
 
   (-close [_]
-    (.close ws)
-    (a/close! bus)))
+    (a/close! busin)
+    (a/close! busout)))
 
 (declare websocket)
 
@@ -84,6 +84,6 @@
     (websocket* url)))
 
 (defn fake-websocket
-  [ch]
-  (let [mult (a/mult ch)]
-    (FakeWebSocket. ch mult)))
+  [busin busout]
+  (let [mult (a/mult busin)]
+    (FakeWebSocket. busin busout mult)))
