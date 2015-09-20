@@ -10,7 +10,7 @@
             [cats.core :as m]
             [cats.monad.either :as either]))
 
-(defrecord Client [socket options open in-ch in-p out-ch bus-ch bus-pub])
+(defrecord Client [socket options open in-ch in-pub out-ch bus-ch bus-pub])
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Input frames decoding process.
@@ -26,7 +26,8 @@
       (when-let [message (a/<! ic)]
         (case (:type message)
           :socket/open (a/>! oc {:type :state :payload :open})
-          :socket/close (a/>! oc {:type :state :payload :close}))
+          :socket/close (a/>! oc {:type :state :payload :close})
+          nil)
         (recur)))
     oc))
 
@@ -47,7 +48,9 @@
         in-pub (:in-pub client)]
     (a/sub in-pub :socket/message ch)
     (go-loop []
+      (println "handle-input-messages$go-loop")
       (when-let [message (a/<! ch)]
+        (println "handle-input-messages$go-loop$1" message)
         (when (= (:type message) :socket/message)
           (try
             (let [frame (postal/parse (:payload message))]
@@ -61,7 +64,13 @@
   (let [sk (:socket client)
         sk-ch (is/-listen sk (a/chan 16))
         in-ch (:in-ch client)]
-    (a/pipe in-ch sk-ch true)))
+    (go-loop []
+      (when-let [val (a/<! sk-ch)]
+        (println "handle-input-data$go-loop$1" val)
+        (a/>! in-ch val)
+        (recur)))))
+
+    ;; (a/pipe in-ch sk-ch true)))
 
 (declare handshake)
 
@@ -81,7 +90,9 @@
 
     ;; Start the process
     (go-loop []
-      (when-let [{:keys [type payload]} (a/<! ch)]
+      (println "handle-output-data$go-loop")
+      (when-let [{:keys [type payload] :as msg} (a/<! ch)]
+        (println "handle-output-data$go-loop$1" msg)
         (case type
           :state
           (case payload
@@ -116,7 +127,9 @@
         timeout (get-in client [:options :handshake-timeout] 600)]
     (is/-send sock (postal/render frame))
     (go
-      (let [{:keys [type payload]} (a/<! (wait-frame client :hello nil timeout))]
+      (println "handshake$go")
+      (let [{:keys [type payload] :as msg} (a/<! (wait-frame client :hello nil timeout))]
+        (println "handshake$go$1" msg)
         (case type
           :timeout
           (do
@@ -143,8 +156,45 @@
   *default-config*
   {:output-buffersize 256
    :input-buffersize 256
-   :handshake-timeout 600
+   :handshake-timeout 1000
    :debug false})
+
+(defn client
+  "Creates a new client instance from socket."
+  ([uri]
+   (client uri {}))
+  ([uri options]
+   (let [socket (is/-create uri)
+         in-ch (a/chan 256)
+         in-pub (a/pub in-ch :type)
+         out-ch (a/chan 256)
+         bus-ch (a/chan)
+         bus-pub (a/pub bus-ch :command)
+         open (volatile! false)
+         options (merge *default-config* options)
+         client (map->Client {:socket socket
+                              :options options
+                              :open open
+                              :in-ch in-ch
+                              :in-pub in-pub
+                              :out-ch out-ch
+                              :bus-ch bus-ch
+                              :bus-pub bus-pub})]
+
+     ;; Process that pipes the socket messages
+     ;; into internal client input bus (in-ch)
+     (handle-input-data client)
+
+     ;; Process that filters postal frames from
+     ;; the input and put them into the message
+     ;; bus (bus-ch).
+     (handle-input-messages client)
+
+     ;; Process that pipes the frames from internal
+     ;; output bus (out-ch) to the socket.
+     (handle-output-data client)
+
+     client)))
 
 (defn client?
   "Return true if a privided client is instance
@@ -178,41 +228,6 @@
     (is/-close sock)
     (a/close! out-ch)))
 
-(defn client
-  "Creates a new client instance from socket."
-  ([uri]
-   (client uri {}))
-  ([uri options]
-   (let [socket (is/-create uri)
-         in-ch (a/chan 256)
-         in-pub (a/pub in-ch :type)
-         out-ch (a/chan 256)
-         bus-ch (a/chan)
-         bus-pub (a/pub bus-ch :command)
-         open (volatile! false)
-         options (merge *default-config* options)
-         client (map->Client {:socket socket
-                              :options options
-                              :open open
-                              :out-ch out-ch
-                              :bus-ch bus-ch
-                              :bus-pub bus-pub})]
-
-     ;; Process that pipes the socket messages
-     ;; into internal client input bus (in-ch)
-     (handle-input-data client)
-
-     ;; Process that filters postal frames from
-     ;; the input and put them into the message
-     ;; bus (bus-ch).
-     (handle-input-messages client)
-
-     ;; Process that pipes the frames from internal
-     ;; output bus (out-ch) to the socket.
-     (handle-output-data client)
-
-     client)))
-
 (defn subscribe*
   "Subscribe to arbitrary events on the internal
   message bus channel."
@@ -229,23 +244,27 @@
   (let [output (:out-ch client)]
     (a/put! output frame)))
 
+(defn- normalize-headers
+  [headers]
+  (merge {:id (str (random-uuid))} headers))
+
 (defn query
   "Sends a QUERY frame to the server."
-  ([client frame]
-   (query client frame 600))
-  ([client frame timeout]
-   {:pre [(client? client)
-          (frame-with-id? frame)]}
-   (p/promise
-    (fn [resolve, reject]
-      (let [msgid (get-in frame [:headers :id])
-            ch (wait-frame client :response msgid timeout)]
-        (send-frame client frame)
-        (a/take! ch (fn [{:keys [type payload]}]
-                      (case type
-                        :timeout (reject (ex-info "Timeout" {:type :timeout}))
-                        :error (reject frame)
-                        :response (resolve frame)))))))))
+  ([client body]
+   (query client body {}))
+  ([client body {:keys [timeout headers] :or {headers {}}}]
+   (let [headers (normalize-headers headers)
+         frame (pframes/query headers body)]
+     (p/promise
+      (fn [resolve, reject]
+        (let [msgid (get-in frame [:headers :id])
+              ch (wait-frame client :response msgid timeout)]
+          (send-frame client frame)
+          (a/take! ch (fn [{:keys [type payload]}]
+                        (case type
+                          :timeout (reject (ex-info "Timeout" {:type :timeout}))
+                          :error (reject frame)
+                          :response (resolve frame))))))))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Helpers
@@ -254,16 +273,18 @@
 (defn- wait-frame
   [client frametype msgid timeout]
   {:pre [(keyword? frametype)]}
-  (let [output (:output client)
-        msgbuspub (:msgbuspub client)
+  (let [out-ch (:out-ch client)
+        bus-pub (:bus-pub client)
         tc (a/timeout timeout)
-        sc (a/chan 1)
+        ic (a/chan 1)
         oc (a/chan 1)]
-    (a/sub msgbuspub frametype sc)
-    (a/sub msgbuspub :error sc)
+    (a/sub bus-pub frametype ic)
+    (a/sub bus-pub :error ic)
     (go-loop []
-      (let [[frame ch] (a/alts! [sc tc])]
-        (if (= ch tc)
+      (println "wait-frame$go-loop")
+      (let [[frame oc] (a/alts! [ic tc])]
+        (println "wait-frame$go-loop$1" frame)
+        (if (= oc tc)
           (a/>! oc {:type :timeout})
           (let [frameid (get-in frame [:headers :message-id])]
             (if (= frameid msgid)
@@ -271,7 +292,7 @@
                 (condp = (:command frame)
                   :error (a/>! oc {:type :error :payload frame})
                   frametype (a/>! oc {:type :response :payload frame}))
-                (a/close! sc)
+                (a/close! ic)
                 (a/close! oc))
               (recur))))))
     oc))

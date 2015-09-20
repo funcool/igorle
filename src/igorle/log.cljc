@@ -41,8 +41,9 @@
 (defmacro trace
   "Show a trace log message in a console."
   [& args]
-  `(when *debug*
-     (a/put! +output-channel+ {:type ::trace :payload ~args})))
+  `(println ~@args))
+  ;; `(when *debug*
+  ;;    (a/put! +output-channel+ {:type ::trace :payload ~args})))
 
 (defmacro warn
   "Show a error or warning message in a console.
@@ -50,4 +51,5 @@
   This macro baypasses any debug control flag
   and prints directly in a console."
   [& args]
-  `(print-event {:type ::warn :payload ~args}))
+  `(println ~@args))
+  ;; `(print-event {:type ::warn :payload ~args}))
