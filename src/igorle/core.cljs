@@ -3,6 +3,7 @@
             [postal.frames :as pframes]
             [postal.core :as postal]
             [igorle.socket :as socket]
+            [igorle.log :as log]
             [cuerdas.core :as str]
             [promesa.core :as p]
             [cats.core :as m]
@@ -26,9 +27,7 @@
           (->> (postal/parse message)
                (a/>! bus))
           (catch js/Error e
-            (log/error e)
-            ;; TODO: put the error in a error channel
-            ))
+            (log/warn "Error parsing the incoming message." e)))
         (recur)))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -40,16 +39,25 @@
 (defn handshake
   [client]
   (let [frame (pframes/frame :hello {} "")
-        sock (:socket client)
+        socket (:socket client)
+        timeout (get-in client [:options :handshake-timeout] 600)
         oc (a/chan)]
     (s/send! sock (postal/render frame))
     (a/go
-      (let [{:keys [type payload]} (a/<! (wait-frame client :hello nil 600))]
+      (let [{:keys [type payload]} (a/<! (wait-frame client :hello nil timeout))]
         (case type
-          :timeout ;; todo
-          :error   ;; todo
-          :hello   ;; todo
-          )
+          :timeout
+          (do
+            (log/warn "Timeout on handshake.")
+            (fatal-state! client))
+
+          :error
+          (do
+            (log/warn "Error occured while handsake is performed.")
+            (fatal-state! client))
+
+          :hello
+          (log/trance "Handskale perfromed successfully."))
         (a/close! oc)))
     oc))
 
@@ -99,8 +107,8 @@
           (case payload
             :open
             (do
+              (a/<! (handshake client))
               (vreset! open true)
-              (a/<! (handshake sock))
               (a/toggle mixer {och {:pause false}}))
 
             :close
@@ -122,6 +130,7 @@
   *default-config*
   {:output-buffersize 256
    :input-buffersize 256
+   :handshake-timeout 600
    :debug false})
 
 (defn client?
