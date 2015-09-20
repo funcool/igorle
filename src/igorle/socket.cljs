@@ -11,6 +11,9 @@
   (-send [_ data] "Send data to the socket.")
   (-close [_] "Close the socket."))
 
+(defprotocol IWebSocketFactory
+  (-create [_] "Create a websocket instance."))
+
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Implementation
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -28,17 +31,19 @@
     (.close ws)
     (a/close! bus)))
 
-(defn websocket*
+(defn- listener
+  [type output event]
+  (let [data (.-data event)]
+    (a/put! output {:type type :payload data ::event event})))]
+
+(defn- websocket*
   [ws]
   (let [bus (a/chan (a/sliding-buffer 256))
-        mult (a/mult bus)
-        listener (fn [type event]
-                   (let [data (.-data event)]
-                     (a/put! output {:type type :payload data ::event event})))]
-    (set! (.-onmessage ws) (partial listener :message))
-    (set! (.-onclose ws) (partial listener :close))
-    (set! (.-onopen ws) (partial listener :open))
-    (set! (.-onerror ws) (partial listener :error))
+        mult (a/mult bus)]
+    (set! (.-onmessage ws) (partial listener bus :socket/message))
+    (set! (.-onclose ws) (partial listener bus :socket/close))
+    (set! (.-onopen ws) (partial listener bus :socket/open))
+    (set! (.-onerror ws) (partial listener bus :socket/error))
     (WebSocket. ws bus mult)))
 
 (deftype FakeWebSocket [bus mult]
@@ -53,6 +58,21 @@
   (-close [_]
     (.close ws)
     (a/close! bus)))
+
+(declare websocket)
+
+(extend-protocol IWebSocketFactory
+  string
+  (-create [uri]
+    (websocket uri))
+
+  WebSocket
+  (-create [it]
+    it)
+
+  FakeWebSocket
+  (-create [it]
+    it))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Public Api
