@@ -4,6 +4,7 @@
   :license {:name "BSD (2-Clause)"
             :url "http://opensource.org/licenses/BSD-2-Clause"}
   :source-paths ["src"]
+  :test-paths ["test"]
   :jar-exclusions [#"\.swp|\.swo|user\.clj"]
   :javac-options ["-target" "1.8" "-source" "1.8" "-Xlint:-options"]
   :plugins [[lein-ancient "0.6.7"]]
