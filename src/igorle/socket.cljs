@@ -2,36 +2,68 @@
   "A basic socket interface abstraction."
   (:require [cljs.core.async :as a]))
 
-(defprotocol ISocket
-  (listen! [_ ch] "Listen all events on channel.")
-  (send! [_ data] "Send data through the socket."))
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; The socket abstraction
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
-(defprotocol ISocketFactory
-  String
-  (-socket [url]
-    (js/WebSocket. url)))
+(defprotocol IWebSocket
+  (-listen [_ ch] "Listen all messages from the channel.")
+  (-send [_ data] "Send data to the socket.")
+  (-close [_] "Close the socket."))
 
-(defn- listener
-  "A listener factory helper."
-  [type output]
-  (fn [event]
-    (a/put! output {:type type :payload (.-data event)})))
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Implementation
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
-;; Default implementation for websockets
+(deftype WebSocket [ws bus mult]
+  IWebSocket
+  (-listen [_ ch]
+    (a/tap mult ch)
+    ch)
 
-(when js/WebSocket
-  (extend-type js/WebSocket
-    ISocket
-    (listen! [s ch]
-      (case type
-        :message (aset s "onmessage" (listener :socket/message input))
-        :close (aset s "onclose" (listener :socket/close input))
-        :open (aset s "onopen" (listener :socket/open input))
-        :error (aset s "onerror" (listener :socket/error input))))
-    (send! [s data]
-      (.send s data))))
+  (-send [_ data]
+    (.send ws data))
 
-(defn socket
-  "Create new socket instance."
+  (-close [_]
+    (.close ws)
+    (a/close! bus)))
+
+(defn websocket*
+  [ws]
+  (let [bus (a/chan (a/sliding-buffer 256))
+        mult (a/mult bus)
+        listener (fn [type event]
+                   (let [data (.-data event)]
+                     (a/put! output {:type type :payload data ::event event})))]
+    (set! (.-onmessage ws) (partial listener :message))
+    (set! (.-onclose ws) (partial listener :close))
+    (set! (.-onopen ws) (partial listener :open))
+    (set! (.-onerror ws) (partial listener :error))
+    (WebSocket. ws bus mult)))
+
+(deftype FakeWebSocket [bus mult]
+  IWebSocket
+  (-listen [_ ch]
+    (a/tap mult ch)
+    ch)
+
+  (-send [_ data]
+    (.send ws data))
+
+  (-close [_]
+    (.close ws)
+    (a/close! bus)))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Public Api
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defn websocket
   [url]
-  (-socket url))
+  (let [ws (js/WebSocket. url)]
+    (websocket* url)))
+
+(defn fake-websocket
+  [ch]
+  (let [mult (a/mult ch)]
+    (FakeWebSocket. ch mult)))
