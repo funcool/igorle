@@ -22,18 +22,15 @@
       (go
         (a/>! in {:type :socket/open})
         (let [v1 (a/<! out)
-              _  (println 1111 v1)
               _  (a/>! in {:type :socket/message
                            :payload (pc/render (pf/frame :hello {}))})
               v2 (a/<! out)
-              _  (println 2222 v2)]
-          (done))))))
-
-
-      ;; (p/then result
-      ;;         (fn [value]
-      ;;           (println value)
-      ;;           (done))))))
+              _  (a/>! in {:type :socket/message
+                           :payload (pc/render (pf/frame :response {:message-id (:id (:headers (pc/parse v2)))}))})]
+          (p/then result
+                  (fn [value]
+                    (println 9999 value)
+                    (done))))))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Initial Setup & Entry Point
@@ -48,5 +45,3 @@
     (set! (.-exitCode js/process) 1)))
 
 (set! *main-cli-fn* #(t/run-tests))
-
-

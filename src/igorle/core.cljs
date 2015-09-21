@@ -50,10 +50,11 @@
     (go-loop []
       (println "handle-input-messages$go-loop")
       (when-let [message (a/<! ch)]
-        (println "handle-input-messages$go-loop$1" message)
+        (println "handle-input-messages$go-loop$1" (:type message))
         (when (= (:type message) :socket/message)
           (try
             (let [frame (postal/parse (:payload message))]
+              (println "handle-input-messages$go-loop$2" frame)
               (a/>! bus-ch frame))
             (catch js/Error e
               (log/warn "Error parsing the incoming message." e))))
@@ -66,7 +67,7 @@
         in-ch (:in-ch client)]
     (go-loop []
       (when-let [val (a/<! sk-ch)]
-        (println "handle-input-data$go-loop$1" val)
+        (println "handle-input-data$go-loop$1")
         (a/>! in-ch val)
         (recur)))))
 
@@ -128,25 +129,22 @@
     (is/-send sock (postal/render frame))
     (go
       (println "handshake$go")
-      (let [{:keys [type payload] :as msg} (a/<! (wait-frame client :hello nil timeout))]
-        (println "handshake$go$1" msg)
-        (case type
-          :timeout
+      (let [frame (a/<! (wait-frame client :hello nil timeout))]
+        (println "handshake$go$1" frame)
+        (if (nil? frame)
           (do
             (log/warn "Timeout on handshake.")
             (fatal-state! client)
             false)
+          (if (= (:command frame) :error)
+            (do
+              (println "[log]: Error occured while handsake is performed.")
+              (fatal-state! client)
+              false)
 
-          :error
-          (do
-            (log/warn "Error occured while handsake is performed.")
-            (fatal-state! client)
-            false)
-
-          :hello
-          (do
-            (log/trace "Handskale perfromed successfully.")
-            true))))))
+            (do
+              (println "[log]: Handskale perfromed successfully.")
+              true)))))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Client Constructor.
@@ -254,17 +252,20 @@
    (query client body {}))
   ([client body {:keys [timeout headers] :or {headers {}}}]
    (let [headers (normalize-headers headers)
+         timeout (get-in client [:options :handshake-timeout] 600)
          frame (pframes/query headers body)]
      (p/promise
       (fn [resolve, reject]
         (let [msgid (get-in frame [:headers :id])
               ch (wait-frame client :response msgid timeout)]
           (send-frame client frame)
-          (a/take! ch (fn [{:keys [type payload]}]
-                        (case type
-                          :timeout (reject (ex-info "Timeout" {:type :timeout}))
-                          :error (reject frame)
-                          :response (resolve frame))))))))))
+          (a/take! ch (fn [frame]
+                        (println "query$take$1" frame)
+                        (if (nil? frame)
+                          (reject (ex-info "Timeout" {:type :timeout}))
+                          (if (= (:command frame) :error)
+                            (reject frame)
+                            (resolve frame)))))))))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Helpers
@@ -276,23 +277,23 @@
   (let [out-ch (:out-ch client)
         bus-pub (:bus-pub client)
         tc (a/timeout timeout)
-        ic (a/chan 1)
-        oc (a/chan 1)]
+        ic (a/chan 1)]
     (a/sub bus-pub frametype ic)
     (a/sub bus-pub :error ic)
     (go-loop []
-      (println "wait-frame$go-loop")
+      (println "wait-frame$go-loop" frametype msgid)
       (let [[frame oc] (a/alts! [ic tc])]
-        (println "wait-frame$go-loop$1" frame)
+        (println "wait-frame$go-loop$1" frametype msgid frame)
         (if (= oc tc)
-          (a/>! oc {:type :timeout})
+          (do
+            (println "wait-frame$go-loop$timeout" timeout)
+            (a/close! ic)
+            nil)
           (let [frameid (get-in frame [:headers :message-id])]
+            (println "wait-frame$go-loop$2" frametype msgid frame)
             (if (= frameid msgid)
               (do
-                (condp = (:command frame)
-                  :error (a/>! oc {:type :error :payload frame})
-                  frametype (a/>! oc {:type :response :payload frame}))
+                (println "wait-frame$go-loop$3" frametype msgid frame)
                 (a/close! ic)
-                (a/close! oc))
-              (recur))))))
-    oc))
+                frame)
+              (recur))))))))
