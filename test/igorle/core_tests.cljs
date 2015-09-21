@@ -13,13 +13,18 @@
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 (defn do-handshake
-  [sock]
-  (let [busin (:busin sock)
-        busout (:busout sock)]
-    (go
-      (let [hello-frame (a/<! busout)]
-        (a/>! busin {:type :socket/message
-                     :payload (pc/render (pf/frame :hello {}))})))))
+  ([sock]
+   (do-handshake sock :hello))
+  ([sock type]
+   (let [busin (:busin sock)
+         busout (:busout sock)]
+     (go
+       (let [hello-frame (a/<! busout)
+             frame (case type
+                     :error (pf/frame :error {} "Unexpected error")
+                     :hello (pf/frame :hello {} ""))]
+         (a/>! busin {:type :socket/message :payload (pc/render frame)}))))))
+
 
 (defn do-open
   [sock]
@@ -27,13 +32,27 @@
     (go
       (a/>! busin {:type :socket/open}))))
 
-(t/deftest experiments
+(defn make-client
+  []
+  (let [busin (a/chan)
+        busout (a/chan)
+        sock (is/fake-websocket busin busout)
+        client (ig/client sock)]
+    [busin busout sock client]))
+
+(t/deftest error-on-handshake-test
   (t/async done
-    (let [busin (a/chan)
-          busout (a/chan)
-          sock (is/fake-websocket busin busout)
-          client (ig/client sock)
-          result (ig/query client "foobar")]
+    (let [[busin busout sock client] (make-client)]
+      (go
+        (a/<! (do-open sock))
+        (a/<! (do-handshake sock :error))
+        (t/is (ig/closed? client))
+        (done)))))
+
+(t/deftest query-frame-success-test
+  (t/async done
+    (let [[busin busout sock client] (make-client)
+          result (ig/query client "/foobar")]
       (go
         (a/<! (do-open sock))
         (a/<! (do-handshake sock))
@@ -45,7 +64,8 @@
                        :payload (pc/render frame)})
           (p/then result
                   (fn [value]
-                    (println 9999 value)
+                    (t/is (pf/frame? value))
+                    (t/is (pf/response? value))
                     (done))))))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;

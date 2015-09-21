@@ -1,7 +1,7 @@
 (ns igorle.core
   (:require-macros [cljs.core.async.macros :refer [go-loop go]])
-  (:require [postal.frames :as pframes]
-            [postal.core :as postal]
+  (:require [postal.frames :as pf]
+            [postal.core :as pc]
             [igorle.socket :as is]
             [igorle.log :as log :include-macros true]
             [cuerdas.core :as str]
@@ -48,13 +48,13 @@
         in-pub (:in-pub client)]
     (a/sub in-pub :socket/message ch)
     (go-loop []
-      (println "handle-input-messages$go-loop")
+      (log/trace "handle-input-messages$go-loop")
       (when-let [message (a/<! ch)]
-        (println "handle-input-messages$go-loop$1" (:type message))
+        (log/trace "handle-input-messages$go-loop$1" (:type message))
         (when (= (:type message) :socket/message)
           (try
-            (let [frame (postal/parse (:payload message))]
-              (println "handle-input-messages$go-loop$2" frame)
+            (let [frame (pc/parse (:payload message))]
+              (log/trace "handle-input-messages$go-loop$2" frame)
               (a/>! bus-ch frame))
             (catch js/Error e
               (log/warn "Error parsing the incoming message." e))))
@@ -67,11 +67,9 @@
         in-ch (:in-ch client)]
     (go-loop []
       (when-let [val (a/<! sk-ch)]
-        (println "handle-input-data$go-loop$1")
+        (log/trace "handle-input-data$go-loop$1")
         (a/>! in-ch val)
         (recur)))))
-
-    ;; (a/pipe in-ch sk-ch true)))
 
 (declare handshake)
 
@@ -91,9 +89,9 @@
 
     ;; Start the process
     (go-loop []
-      (println "handle-output-data$go-loop")
+      (log/trace "handle-output-data$go-loop")
       (when-let [{:keys [type payload] :as msg} (a/<! ch)]
-        (println "handle-output-data$go-loop$1" msg)
+        (log/trace "handle-output-data$go-loop$1" msg)
         (case type
           :state
           (case payload
@@ -108,7 +106,7 @@
               (a/toggle mixer {output-ch {:pause true}})))
 
           :frame
-          (let [frame (postal/render payload)]
+          (let [frame (pc/render payload)]
             (is/-send sock frame)))
         (recur)))))
 
@@ -123,14 +121,14 @@
 
 (defn handshake
   [client]
-  (let [frame (pframes/frame :hello {} "")
+  (let [frame (pf/frame :hello {} "")
         sock (:socket client)
         timeout (get-in client [:options :handshake-timeout] 600)]
-    (is/-send sock (postal/render frame))
+    (is/-send sock (pc/render frame))
     (go
-      (println "handshake$go")
+      (log/trace "handshake$go")
       (let [frame (a/<! (wait-frame client :hello nil timeout))]
-        (println "handshake$go$1" frame)
+        (log/trace "handshake$go$1" frame)
         (if (nil? frame)
           (do
             (log/warn "Timeout on handshake.")
@@ -138,12 +136,12 @@
             false)
           (if (= (:command frame) :error)
             (do
-              (println "[log]: Error occured while handsake is performed.")
+              (log/warn "Error occured while handsake is performed.")
               (fatal-state! client)
               false)
 
             (do
-              (println "[log]: Handskale perfromed successfully.")
+              (log/trace "Handskale perfromed successfully.")
               true)))))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -155,6 +153,7 @@
   {:output-buffersize 256
    :input-buffersize 256
    :handshake-timeout 1000
+   :default-timeout 1000
    :debug false})
 
 (defn client
@@ -219,11 +218,12 @@
   usable state."
   [client data]
   (let [sock (:socket client)
-        out-ch (:out-ch client)]
-    (log/warn "The client '%s' enters in fatal state", client)
-    ;; TODO: add the ability to centralize all input messages
-    ;; (a/put! input {:type :client/error :payload data})
+        out-ch (:out-ch client)
+        in-ch (:in-ch client)]
+    (log/warn "The client enters in fatal state")
+    (a/put! in-ch {:type :client/error :payload data})
     (is/-close sock)
+    (a/close! in-ch)
     (a/close! out-ch)))
 
 (defn subscribe*
@@ -237,35 +237,41 @@
      (a/sub pub key ch true)
      ch)))
 
-(defn- send-frame
+(defn- send-frame!
   [client frame]
-  (let [output (:out-ch client)]
-    (a/put! output frame)))
+  (letfn [(on-take [resolve reject frame]
+            (println "send-frame!$take$1" frame)
+            (if (nil? frame)
+              (reject (ex-info "Timeout" {:type :timeout}))
+              (if (= (:command frame) :error)
+                (reject frame)
+                (resolve frame))))]
+    (p/promise
+     (fn [resolve reject]
+       (let [msgid (get-in frame [:headers :id])
+             timeout (get-in client [:options :default-timeout] 600)
+             ch (wait-frame client :response msgid timeout)]
+         (a/put! (:out-ch client) frame)
+         (a/take! ch (partial on-take resolve reject)))))))
 
-(defn- normalize-headers
-  [headers]
-  (merge {:id (str (random-uuid))} headers))
+(defn- make-headers
+  [dest opts]
+  (let [default-headers {:id (str (random-uuid))
+                         :destination dest}
+        additional-headers (:headers opts)]
+    (merge default-headers
+           additional-headers)))
 
 (defn query
   "Sends a QUERY frame to the server."
-  ([client body]
-   (query client body {}))
-  ([client body {:keys [timeout headers] :or {headers {}}}]
-   (let [headers (normalize-headers headers)
-         timeout (get-in client [:options :handshake-timeout] 600)
-         frame (pframes/query headers body)]
-     (p/promise
-      (fn [resolve, reject]
-        (let [msgid (get-in frame [:headers :id])
-              ch (wait-frame client :response msgid timeout)]
-          (send-frame client frame)
-          (a/take! ch (fn [frame]
-                        (println "query$take$1" frame)
-                        (if (nil? frame)
-                          (reject (ex-info "Timeout" {:type :timeout}))
-                          (if (= (:command frame) :error)
-                            (reject frame)
-                            (resolve frame)))))))))))
+  ([client dest]
+   (query client dest nil nil))
+  ([client dest body]
+   (query client dest body nil))
+  ([client dest body opts]
+   (let [headers (make-headers dest opts)
+         frame (pf/query headers body)]
+     (send-frame! client frame))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Helpers
@@ -280,20 +286,21 @@
         ic (a/chan 1)]
     (a/sub bus-pub frametype ic)
     (a/sub bus-pub :error ic)
+
     (go-loop []
-      (println "wait-frame$go-loop" frametype msgid)
+      (log/trace "wait-frame$go-loop" frametype msgid)
       (let [[frame oc] (a/alts! [ic tc])]
-        (println "wait-frame$go-loop$1" frametype msgid frame)
+        ;; (log/trace "wait-frame$go-loop$1" frametype msgid frame)
         (if (= oc tc)
           (do
-            (println "wait-frame$go-loop$timeout" timeout)
+            (log/trace "wait-frame$go-loop$timeout" timeout)
             (a/close! ic)
             nil)
           (let [frameid (get-in frame [:headers :id])]
-            (println "wait-frame$go-loop$2" frametype msgid frame)
+            ;; (log/trace "wait-frame$go-loop$2" frametype msgid frame)
             (if (= frameid msgid)
               (do
-                (println "wait-frame$go-loop$3" frametype msgid frame)
+                (log/trace "wait-frame$go-loop$3" frametype msgid frame)
                 (a/close! ic)
                 frame)
               (recur))))))))
