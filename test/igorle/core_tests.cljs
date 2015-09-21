@@ -12,21 +12,37 @@
 ;; Tests
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
+(defn do-handshake
+  [sock]
+  (let [busin (:busin sock)
+        busout (:busout sock)]
+    (go
+      (let [hello-frame (a/<! busout)]
+        (a/>! busin {:type :socket/message
+                     :payload (pc/render (pf/frame :hello {}))})))))
+
+(defn do-open
+  [sock]
+  (let [busin (:busin sock)]
+    (go
+      (a/>! busin {:type :socket/open}))))
+
 (t/deftest experiments
   (t/async done
-    (let [in (a/chan)
-          out (a/chan)
-          sock (is/fake-websocket in out)
+    (let [busin (a/chan)
+          busout (a/chan)
+          sock (is/fake-websocket busin busout)
           client (ig/client sock)
           result (ig/query client "foobar")]
       (go
-        (a/>! in {:type :socket/open})
-        (let [v1 (a/<! out)
-              _  (a/>! in {:type :socket/message
-                           :payload (pc/render (pf/frame :hello {}))})
-              v2 (a/<! out)
-              _  (a/>! in {:type :socket/message
-                           :payload (pc/render (pf/frame :response {:message-id (:id (:headers (pc/parse v2)))}))})]
+        (a/<! (do-open sock))
+        (a/<! (do-handshake sock))
+
+        (let [message (a/<! busout)
+              received-frame (pc/parse message)
+              frame (pf/frame :response (:headers received-frame))]
+          (a/>! busin {:type :socket/message
+                       :payload (pc/render frame)})
           (p/then result
                   (fn [value]
                     (println 9999 value)

@@ -289,7 +289,7 @@
             (println "wait-frame$go-loop$timeout" timeout)
             (a/close! ic)
             nil)
-          (let [frameid (get-in frame [:headers :message-id])]
+          (let [frameid (get-in frame [:headers :id])]
             (println "wait-frame$go-loop$2" frametype msgid frame)
             (if (= frameid msgid)
               (do

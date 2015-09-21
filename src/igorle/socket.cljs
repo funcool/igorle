@@ -18,7 +18,7 @@
 ;; Implementation
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
-(deftype WebSocket [ws bus mult]
+(defrecord WebSocket [ws bus mult]
   IWebSocket
   (-listen [_ ch]
     (a/tap mult ch)
@@ -46,7 +46,7 @@
     (set! (.-onerror ws) (partial listener bus :socket/error))
     (WebSocket. ws bus mult)))
 
-(deftype FakeWebSocket [busin busout mult]
+(defrecord FakeWebSocket [busin busout mult]
   IWebSocket
   (-listen [_ ch]
     (a/tap mult ch)
