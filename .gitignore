@@ -15,6 +15,7 @@ pom.xml.asc
 *~
 .\#*
 /.nrepl-history
-
+/nashorn_code_cache
+/node_modules
 /out
 /tests.js
