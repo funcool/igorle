@@ -11,12 +11,7 @@
   :dependencies [[org.clojure/clojure "1.7.0" :scope "provided"]
                  [org.clojure/clojurescript "1.7.48" :scope "provided"]
                  [org.clojure/core.async "0.1.346.0-17112a-alpha"]
-                 ;; Commented while development.
-                 ;; [funcool/postal "0.2.0-SNAPSHOT"]
+                 [funcool/postal "0.2.0-SNAPSHOT"]
                  [funcool/promesa "0.5.0"]
                  [funcool/cats "1.0.0"]
-                 [funcool/cuerdas "0.6.0"]
-
-                 ;; Specific to POSTAL builtin
-                 [org.clojure/tools.reader "0.10.0-alpha3"]])
-
+                 [funcool/cuerdas "0.6.0"]])
